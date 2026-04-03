@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Photo Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; }
+
+  #drop-zone {
+    position: fixed; inset: 0; z-index: 9999; background: #1a1a2e;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #ccc; gap: 20px;
+  }
+  #drop-zone h1 { font-size: 28px; color: #e0e0e0; }
+  #drop-zone p { font-size: 14px; color: #888; max-width: 400px; text-align: center; line-height: 1.5; }
+  #drop-zone label {
+    padding: 14px 32px; background: #4fc3f7; color: #1a1a2e; border-radius: 8px;
+    font-size: 16px; font-weight: 600; cursor: pointer; transition: background 0.2s;
+  }
+  #drop-zone label:hover { background: #81d4fa; }
+  #drop-zone input { display: none; }
+  #drop-zone .drag-over { border: 3px dashed #4fc3f7; border-radius: 16px; padding: 60px; }
+  #drop-zone .or { color: #666; font-size: 13px; }
+
+  #progress-bar {
+    display: none; width: 300px; height: 6px; background: #2a3a5c;
+    border-radius: 3px; overflow: hidden;
+  }
+  #progress-bar .fill { height: 100%; background: #4fc3f7; width: 0; transition: width 0.1s; }
+  #progress-text { display: none; color: #888; font-size: 13px; }
+
+  #map { width: 100%; height: calc(100vh - 100px); display: none; }
+
+  #timeline {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    height: 100px; background: #16213e; padding: 12px 24px;
+    display: none; flex-direction: column; justify-content: center;
+    box-shadow: 0 -2px 12px rgba(0,0,0,0.4); z-index: 1000;
+  }
+  #timeline-labels {
+    display: flex; justify-content: space-between; color: #8899aa;
+    font-size: 12px; margin-bottom: 6px; user-select: none;
+  }
+  #timeline-labels span { cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: all 0.2s; }
+  #timeline-labels span:hover { color: #fff; background: rgba(255,255,255,0.1); }
+  #timeline-labels span.active { color: #4fc3f7; font-weight: 600; }
+  #slider-row { display: flex; align-items: center; gap: 12px; }
+  #time-slider {
+    flex: 1; -webkit-appearance: none; appearance: none;
+    height: 6px; border-radius: 3px; background: #2a3a5c; outline: none; cursor: pointer;
+  }
+  #time-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 18px; height: 18px;
+    border-radius: 50%; background: #4fc3f7; cursor: grab;
+    box-shadow: 0 0 8px rgba(79,195,247,0.5);
+  }
+  #time-slider::-moz-range-thumb {
+    width: 18px; height: 18px; border: none;
+    border-radius: 50%; background: #4fc3f7; cursor: grab;
+    box-shadow: 0 0 8px rgba(79,195,247,0.5);
+  }
+  #time-display {
+    color: #e0e0e0; font-size: 13px; min-width: 145px; text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  #photo-count {
+    color: #8899aa; font-size: 12px; min-width: 90px; text-align: left;
+  }
+  .photo-popup img {
+    max-width: 280px; max-height: 200px; border-radius: 6px;
+    display: block; margin-bottom: 6px;
+  }
+  .photo-popup .popup-info { font-size: 12px; color: #555; text-align: center; }
+  .custom-marker {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid #fff; cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  }
+  .custom-marker:hover {
+    transform: scale(1.6);
+    box-shadow: 0 0 12px rgba(79,195,247,0.7);
+  }
+  .custom-marker.dimmed { opacity: 0.2; }
+  .leaflet-popup-content-wrapper {
+    border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  }
+</style>
+</head>
+<body>
+
+<div id="drop-zone">
+  <h1>Photo Map</h1>
+  <p>Select a folder of images with GPS data to plot them on a map with a timeline.</p>
+  <label for="folder-input">Choose Folder</label>
+  <input type="file" id="folder-input" webkitdirectory multiple accept="image/*">
+  <span class="or">or drag &amp; drop a folder here</span>
+  <div id="progress-bar"><div class="fill"></div></div>
+  <span id="progress-text"></span>
+</div>
+
+<div id="map"></div>
+<div id="timeline">
+  <div id="timeline-labels"></div>
+  <div id="slider-row">
+    <span id="photo-count"></span>
+    <input type="range" id="time-slider" min="0" max="1000" value="1000">
+    <span id="time-display"></span>
+  </div>
+</div>
+
+<script>
+const dropZone = document.getElementById('drop-zone');
+const folderInput = document.getElementById('folder-input');
+const progressBar = document.getElementById('progress-bar');
+const progressFill = progressBar.querySelector('.fill');
+const progressText = document.getElementById('progress-text');
+
+// Drag and drop
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const files = [...e.dataTransfer.files].filter(f => /\.(jpe?g|png|tiff?|heic)$/i.test(f.name));
+  if (files.length) processFiles(files);
+});
+
+folderInput.addEventListener('change', () => {
+  const files = [...folderInput.files].filter(f => /\.(jpe?g|png|tiff?|heic)$/i.test(f.name));
+  if (files.length) processFiles(files);
+});
+
+async function processFiles(files) {
+  progressBar.style.display = 'block';
+  progressText.style.display = 'block';
+
+  const photos = [];
+  for (let i = 0; i < files.length; i++) {
+    progressFill.style.width = `${((i + 1) / files.length) * 100}%`;
+    progressText.textContent = `Reading EXIF: ${i + 1} / ${files.length} (${photos.length} with GPS)`;
+
+    try {
+      const exif = await exifr.parse(files[i], { gps: true, pick: ['DateTimeOriginal', 'CreateDate', 'GPSLatitude', 'GPSLongitude'] });
+      if (exif && exif.latitude && exif.longitude) {
+        const date = exif.DateTimeOriginal || exif.CreateDate;
+        const thumbUrl = URL.createObjectURL(files[i]);
+        photos.push({
+          file: files[i].name,
+          lat: exif.latitude,
+          lon: exif.longitude,
+          ts: date ? date.getTime() : 0,
+          thumbUrl
+        });
+      }
+    } catch (e) { /* skip files without EXIF */ }
+  }
+
+  if (photos.length === 0) {
+    progressText.textContent = 'No images with GPS data found in that folder.';
+    progressFill.style.width = '0';
+    return;
+  }
+
+  photos.sort((a, b) => a.ts - b.ts);
+  initMap(photos);
+}
+
+function initMap(photos) {
+  dropZone.style.display = 'none';
+  document.getElementById('map').style.display = 'block';
+  document.getElementById('timeline').style.display = 'flex';
+
+  const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dayColors = ['#ff6b6b','#feca57','#48dbfb','#ff9ff3','#54a0ff','#5f27cd','#01a3a4','#f368e0','#ff9f43','#0abde3','#ee5a24','#10ac84'];
+
+  const minTs = photos[0].ts;
+  const maxTs = photos[photos.length - 1].ts;
+
+  function getDayColor(ts) {
+    const dayOfTrip = Math.floor((ts - minTs) / 86400000);
+    return dayColors[dayOfTrip % dayColors.length];
+  }
+
+  const map = L.map('map', { zoomControl: true }).setView([50, 2], 6);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>',
+    subdomains: 'abcd',
+    maxZoom: 20
+  }).addTo(map);
+
+  const pathLine = L.polyline(photos.map(p => [p.lat, p.lon]), {
+    color: '#4fc3f7', weight: 2, opacity: 0.4, dashArray: '6,8'
+  }).addTo(map);
+
+  const markers = photos.map((p, i) => {
+    const color = getDayColor(p.ts);
+    const icon = L.divIcon({
+      className: '',
+      html: `<div class="custom-marker" style="background:${color}" data-idx="${i}"></div>`,
+      iconSize: [14, 14], iconAnchor: [7, 7]
+    });
+    const marker = L.marker([p.lat, p.lon], { icon }).addTo(map);
+
+    const dateObj = new Date(p.ts);
+    const dateStr = p.ts
+      ? `${dayNames[dateObj.getDay()]} ${monthNames[dateObj.getMonth()]} ${dateObj.getDate()}, ${dateObj.getFullYear()} ${String(dateObj.getHours()).padStart(2,'0')}:${String(dateObj.getMinutes()).padStart(2,'0')}`
+      : 'Unknown date';
+
+    marker.bindPopup(
+      `<div class="photo-popup">
+        <img src="${p.thumbUrl}" loading="lazy" alt="${p.file}">
+        <div class="popup-info"><strong>${p.file}</strong><br>${dateStr}</div>
+      </div>`,
+      { maxWidth: 300, autoPan: true }
+    );
+    marker.on('mouseover', function() {
+      this.openPopup();
+      const popup = this.getPopup();
+      const img = popup.getElement()?.querySelector('img');
+      if (img && !img.complete) {
+        img.onload = () => popup.update();
+      }
+    });
+    return { marker, photo: p };
+  });
+
+  // Day labels
+  const labelsEl = document.getElementById('timeline-labels');
+  const days = [];
+  const seen = new Set();
+  photos.forEach(p => {
+    const d = new Date(p.ts);
+    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      days.push({ ts: p.ts, label: `${monthNames[d.getMonth()]} ${d.getDate()}`, dayStart: new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() });
+    }
+  });
+
+  days.forEach(day => {
+    const span = document.createElement('span');
+    span.textContent = day.label;
+    span.addEventListener('click', () => {
+      const ratio = (day.dayStart - minTs) / (maxTs - minTs);
+      slider.value = Math.round(ratio * 1000);
+      updateTimeline();
+    });
+    labelsEl.appendChild(span);
+  });
+
+  const slider = document.getElementById('time-slider');
+  const timeDisplay = document.getElementById('time-display');
+  const photoCount = document.getElementById('photo-count');
+
+  function formatDate(ts) {
+    const d = new Date(ts);
+    return `${monthNames[d.getMonth()]} ${d.getDate()}, ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  }
+
+  function updateTimeline() {
+    const ratio = slider.value / 1000;
+    const cutoffTs = minTs + ratio * (maxTs - minTs);
+    let visibleCount = 0;
+
+    markers.forEach(({ marker, photo }) => {
+      const el = marker.getElement();
+      if (!el) return;
+      const dot = el.querySelector('.custom-marker');
+      if (!dot) return;
+      if (photo.ts <= cutoffTs) {
+        dot.classList.remove('dimmed');
+        dot.style.pointerEvents = 'auto';
+        visibleCount++;
+      } else {
+        dot.classList.add('dimmed');
+        dot.style.pointerEvents = 'none';
+      }
+    });
+
+    timeDisplay.textContent = formatDate(cutoffTs);
+    photoCount.textContent = `${visibleCount} / ${photos.length} photos`;
+
+    const cutoffDay = new Date(cutoffTs);
+    const cutoffKey = `${cutoffDay.getFullYear()}-${cutoffDay.getMonth()}-${cutoffDay.getDate()}`;
+    labelsEl.querySelectorAll('span').forEach((span, i) => {
+      const d = new Date(days[i].ts);
+      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      span.classList.toggle('active', key === cutoffKey);
+    });
+
+    const visibleCoords = photos.filter(p => p.ts <= cutoffTs).map(p => [p.lat, p.lon]);
+    pathLine.setLatLngs(visibleCoords);
+  }
+
+  slider.addEventListener('input', updateTimeline);
+  updateTimeline();
+  map.fitBounds(photos.map(p => [p.lat, p.lon]), { padding: [30, 30] });
+}
+</script>
+</body>
+</html>
